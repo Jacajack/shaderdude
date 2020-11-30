@@ -49,7 +49,7 @@ GLuint create_shader(GLenum type, const std::string &source)
 {
 	GLuint shader = glCreateShader(type);
 	char *buf = new char[source.length() + 1];
-	std::strncpy(buf, source.c_str(), source.length());
+	std::strncpy(buf, source.c_str(), source.length() + 1);
 	glShaderSource(shader, 1, &buf, NULL);
 	glCompileShader(shader);
 	delete[] buf;
