@@ -103,6 +103,7 @@ GLuint load_fragment_shader(const std::string &path)
 	"uniform float iTime;"
 	"uniform vec3 iResolution;"
 	"uniform vec4 iMouse;"
+	"uniform int iFrame;"
 	"out vec4 f_color;"
 	"\n";
 	
@@ -248,6 +249,7 @@ int main(int argc, char *argv[])
 		glUniform1f(glGetUniformLocation(program, "iTime"), t);
 		glUniform3f(glGetUniformLocation(program, "iResolution"), win_w, win_h, 0);
 		glUniform4f(glGetUniformLocation(program, "iMouse"), mx, my, mlb, mrb);
+		glUniform1i(glGetUniformLocation(program, "iFrame"), frame_counter);
 		glDrawArrays(GL_TRIANGLES, 0, 6);
 		glfwPollEvents();
 		glfwSwapBuffers(win);
