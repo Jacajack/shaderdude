@@ -154,14 +154,14 @@ int main(int argc, char *argv[])
 	
 	const std::string shader_path = argv[1];
 	
-	glfwInit();
 	glfwSetErrorCallback(glfw_error_callback);
+	glfwInit();
 	glfwWindowHint(GLFW_SAMPLES, 2);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 	glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GL_TRUE);
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-// 	glfwWindowHint(GLFW_OPENGL_CORE_PROFILE, GL_TRUE);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	
 	GLFWwindow *win = glfwCreateWindow(720, 480, ("shaderdude - "s + shader_path).c_str(), NULL, NULL);
 	if (win == nullptr) throw std::runtime_error("glfwCreateWindow() failed");
