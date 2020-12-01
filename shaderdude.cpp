@@ -102,6 +102,7 @@ GLuint load_fragment_shader(const std::string &path)
 	
 	"uniform float iTime;"
 	"uniform vec3 iResolution;"
+	"uniform vec4 iMouse;"
 	"out vec4 f_color;"
 	"\n";
 	
@@ -141,6 +142,11 @@ time_t get_mod_time(const std::string &path)
 		throw std::runtime_error("could not get modification time");
 }
 
+void glfw_error_callback(int error, const char *message)
+{
+	throw std::runtime_error("GLFW error - "s + message);
+}
+
 int main(int argc, char *argv[])
 {
 	if (argc < 2)
@@ -149,12 +155,13 @@ int main(int argc, char *argv[])
 	const std::string shader_path = argv[1];
 	
 	glfwInit();
+	glfwSetErrorCallback(glfw_error_callback);
 	glfwWindowHint(GLFW_SAMPLES, 2);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 	glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GL_TRUE);
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-	glfwWindowHint(GLFW_OPENGL_CORE_PROFILE, GL_TRUE);
+// 	glfwWindowHint(GLFW_OPENGL_CORE_PROFILE, GL_TRUE);
 	
 	GLFWwindow *win = glfwCreateWindow(720, 480, ("shaderdude - "s + shader_path).c_str(), NULL, NULL);
 	if (win == nullptr) throw std::runtime_error("glfwCreateWindow() failed");
@@ -184,8 +191,18 @@ int main(int argc, char *argv[])
 	long frame_counter = 0;
 	while (!glfwWindowShouldClose(win))
 	{
+		// Time
 		double t = glfwGetTime();
+		
+		// Mouse
+		double mx, my;
+		bool mlb = glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+		bool mrb = glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+		glfwGetCursorPos(win, &mx, &my);
+		
+		// Resolution
 		static int win_w = 0, win_h = 0;
+		
 		static GLuint program = 0;
 		static time_t shader_mod_time = 0;
 		
@@ -230,6 +247,7 @@ int main(int argc, char *argv[])
 		glClear(GL_COLOR_BUFFER_BIT);
 		glUniform1f(glGetUniformLocation(program, "iTime"), t);
 		glUniform3f(glGetUniformLocation(program, "iResolution"), win_w, win_h, 0);
+		glUniform4f(glGetUniformLocation(program, "iMouse"), mx, my, mlb, mrb);
 		glDrawArrays(GL_TRIANGLES, 0, 6);
 		glfwPollEvents();
 		glfwSwapBuffers(win);
