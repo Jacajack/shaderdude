@@ -4,6 +4,8 @@
 #include <sstream>
 #include <fstream>
 #include <cstring>
+#include <vector>
+#include <algorithm>
 
 #include <glm/glm.hpp>
 #include <GL/glew.h>
@@ -13,7 +15,63 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 using namespace std::string_literals;
+
+struct texture 
+{
+	std::string filename;
+	GLuint tex;
+	uint8_t *data;
+	int width;
+	int height;
+	int channels;
+	
+	texture(const texture&) = delete;
+	texture &operator=(const texture&) = delete;
+	
+	texture(texture &&src) :
+		filename(std::move(src.filename)),
+		tex(src.tex),
+		data(src.data),
+		width(src.width),
+		height(src.height),
+		channels(src.channels)
+	{
+		src.tex = 0;
+		src.data = nullptr;
+	}
+	
+	explicit texture(const std::string &path)
+	{
+		data = stbi_load(path.c_str(), &width, &height, &channels, 0);
+		if (!data)
+			throw std::runtime_error("failed to load image '"s + path + "'"s);
+		
+		// Reorder
+		int row_size = width * channels;
+		for (int y = 0; y < height / 2; y++)
+			std::swap_ranges(data + y * row_size, data + (y + 1) * row_size, data + (height - 1 - y) * row_size);
+		
+		GLenum data_format;
+		if (channels == 1) data_format = GL_RED;
+		else if (channels == 2) data_format = GL_RG;
+		else if (channels == 3) data_format = GL_RGB;
+		else data_format = GL_RGBA;
+		
+		glCreateTextures(GL_TEXTURE_2D, 1, &tex);
+		glTextureStorage2D(tex, 1, GL_RGBA8, width, height);
+		glTextureSubImage2D(tex, 0, 0, 0, width, height, data_format, GL_UNSIGNED_BYTE, data);  
+	}
+	
+	~texture()
+	{
+		if (tex) glDeleteTextures(1, &tex);
+		if (data) stbi_image_free(data);
+	}
+};
 
 std::string slurp_txt(const std::string &path)
 {
@@ -90,7 +148,7 @@ GLuint create_vertex_shader()
 	return create_shader(GL_VERTEX_SHADER, source);
 }
 
-GLuint load_fragment_shader(const std::string &path)
+GLuint load_fragment_shader(const std::string &path, int texture_count)
 {
 	static const std::string prefix = 
 	"#version 430 core\n"
@@ -118,14 +176,20 @@ GLuint load_fragment_shader(const std::string &path)
 	"}"
 	"\n";
 	
-	return create_shader(GL_FRAGMENT_SHADER, prefix + slurp_txt(path) + suffix);
+	std::stringstream texture_bindings;
+	for (int i = 0; i < texture_count; i++)
+		texture_bindings << "layout (binding = " << i << ") uniform sampler2D iChannel" << i << ";\n";
+	texture_bindings << "uniform vec3 iChannelResolution[" << texture_count << "];\n";
+	
+	std::string shader_source = prefix + texture_bindings.str() + slurp_txt(path) + suffix;
+	return create_shader(GL_FRAGMENT_SHADER, shader_source);
 }
 
-GLuint make_program(const std::string &path)
+GLuint make_program(const std::string &path, int texture_count)
 {
 	GLuint prog = glCreateProgram();
 	GLuint vsh = create_vertex_shader();
-	GLuint fsh = load_fragment_shader(path);
+	GLuint fsh = load_fragment_shader(path, texture_count);
 	glAttachShader(prog, vsh);
 	glAttachShader(prog, fsh);
 	glLinkProgram(prog);
@@ -171,6 +235,21 @@ int main(int argc, char *argv[])
 	glewExperimental = GL_TRUE;
 	if (glewInit() != GLEW_OK) throw std::runtime_error("glewInit() failed");
 	
+	// Load textures
+	std::vector<texture> textures;
+	for (int i = 0; i < argc - 2; i++)
+	{
+		try
+		{
+			textures.emplace_back(std::string(argv[2 + i]));
+		}
+		catch (const std::exception &ex)
+		{
+			std::cerr << "Loading textures failed: " << ex.what() << std::endl;
+			return 1;
+		}
+	}
+	
 	// Check shader file
 	try
 	{
@@ -186,6 +265,10 @@ int main(int argc, char *argv[])
 	GLuint vao;
 	glCreateVertexArrays(1, &vao);
 	glBindVertexArray(vao);
+	
+	// Bind textures to samplers
+	for (int i = 0; i < textures.size(); i++)
+		glBindTextureUnit(i, textures[i].tex);
 	
 	glDisable(GL_DEPTH_TEST);
 	
@@ -228,7 +311,7 @@ int main(int argc, char *argv[])
 						shader_mod_time = new_shader_mod_time;
 						glDeleteProgram(program);
 						program = 0;
-						program = make_program(shader_path);
+						program = make_program(shader_path, textures.size());
 						glUseProgram(program);
 					}
 					catch (const std::exception &ex)
@@ -250,6 +333,10 @@ int main(int argc, char *argv[])
 		glUniform3f(glGetUniformLocation(program, "iResolution"), win_w, win_h, 0);
 		glUniform4f(glGetUniformLocation(program, "iMouse"), mx, my, mlb, mrb);
 		glUniform1i(glGetUniformLocation(program, "iFrame"), frame_counter);
+		
+		for (int i = 0; i < textures.size(); i++)
+			glUniform3f(glGetUniformLocation(program, ("iChannelResolution["s + std::to_string(i) +"]"s).c_str()), textures[i].width, textures[i].height, 0.f);
+		
 		glDrawArrays(GL_TRIANGLES, 0, 6);
 		glfwPollEvents();
 		glfwSwapBuffers(win);
