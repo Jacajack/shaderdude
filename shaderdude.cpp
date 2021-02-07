@@ -6,6 +6,8 @@
 #include <cstring>
 #include <vector>
 #include <algorithm>
+#include <map>
+#include <memory>
 
 #include <glm/glm.hpp>
 #include <GL/glew.h>
@@ -17,6 +19,10 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
 
 using namespace std::string_literals;
 
@@ -73,6 +79,56 @@ struct texture
 	}
 };
 
+struct shader_uniform
+{
+	std::string name;
+	GLint location;
+	GLenum type;
+	
+	shader_uniform() :
+		location(-1)
+	{}
+	
+	shader_uniform(const std::string &n, GLint l, GLenum t) :
+		name(n),
+		location(l),
+		type(t)
+	{}
+};
+
+struct shader_program
+{
+	GLuint id;
+	std::map<std::string, shader_uniform> uniforms;
+	
+	shader_program(const shader_program &) = delete;
+	shader_program &operator=(const shader_program &) = delete;
+	
+	explicit shader_program(GLuint i) :
+		id(i)
+	{
+		GLint count;
+		glGetProgramiv(id, GL_ACTIVE_UNIFORMS, &count);
+		
+		for (int loc = 0; loc < count; loc++)
+		{
+			char buf[256];
+			GLsizei length;
+			GLint size;
+			GLenum type;
+			glGetActiveUniform(id, loc, sizeof(buf), &length, &size, &type, buf);
+			uniforms[buf] = shader_uniform(buf, loc, type);
+		}
+	}
+	
+	~shader_program()
+	{
+		glDeleteProgram(id);
+	}
+};
+
+bool gui_visible = true;
+
 std::string slurp_txt(const std::string &path)
 {
 	std::ifstream f(path);
@@ -114,7 +170,10 @@ GLuint create_shader(GLenum type, const std::string &source)
 	
 	std::string log;
 	if (get_shader_log(shader, log) == GL_FALSE)
+	{
+		glDeleteShader(shader);
 		throw std::runtime_error("Shader compilation failed:\n"s + log + "\n"s);
+	}
 	
 	return shader;
 }
@@ -185,17 +244,30 @@ GLuint load_fragment_shader(const std::string &path, int texture_count)
 	return create_shader(GL_FRAGMENT_SHADER, shader_source);
 }
 
-GLuint make_program(const std::string &path, int texture_count)
+std::unique_ptr<shader_program> make_program(const std::string &path, int texture_count)
 {
+	GLuint vsh = 0, fsh = 0;
+	
+	try
+	{
+		vsh = create_vertex_shader();
+		fsh = load_fragment_shader(path, texture_count);
+	}
+	catch (...)
+	{
+		glDeleteShader(vsh);
+		glDeleteShader(fsh);
+		std::rethrow_exception(std::current_exception());
+	}
+	
 	GLuint prog = glCreateProgram();
-	GLuint vsh = create_vertex_shader();
-	GLuint fsh = load_fragment_shader(path, texture_count);
 	glAttachShader(prog, vsh);
 	glAttachShader(prog, fsh);
 	glLinkProgram(prog);
 	glDeleteShader(vsh);
 	glDeleteShader(fsh);
-	return prog;
+	
+	return std::make_unique<shader_program>(prog);
 }
 
 time_t get_mod_time(const std::string &path)
@@ -210,6 +282,12 @@ time_t get_mod_time(const std::string &path)
 void glfw_error_callback(int error, const char *message)
 {
 	throw std::runtime_error("GLFW error - "s + message);
+}
+
+void glfw_key_callback(GLFWwindow *window, int key, int scancode, int action, int mods)
+{
+	if (key == GLFW_KEY_F1 && action == GLFW_PRESS)
+		gui_visible = !gui_visible;
 }
 
 int main(int argc, char *argv[])
@@ -234,6 +312,17 @@ int main(int argc, char *argv[])
 	glfwMakeContextCurrent(win);
 	glewExperimental = GL_TRUE;
 	if (glewInit() != GLEW_OK) throw std::runtime_error("glewInit() failed");
+	
+	// GLFW callbacks - these must be set up before ImGui takes control
+	glfwSetKeyCallback(win, glfw_key_callback);
+	
+	// Imgui context
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO &imgui_io = ImGui::GetIO(); (void)imgui_io;
+	ImGui::StyleColorsDark();
+	ImGui_ImplGlfw_InitForOpenGL(win, true);
+	ImGui_ImplOpenGL3_Init();
 	
 	// Load textures
 	std::vector<texture> textures;
@@ -272,7 +361,20 @@ int main(int argc, char *argv[])
 	
 	glDisable(GL_DEPTH_TEST);
 	
+	// The shader
+	std::unique_ptr<shader_program> program;
+	
+	// Some state
+	int win_w = 0, win_h = 0;
+	time_t shader_mod_time = 0;
+	double shader_start_time = 0.0;
 	long frame_counter = 0;
+	std::map<std::string, int> int_uniforms_state;
+	std::map<std::string, float> float_uniforms_state;
+	std::map<std::string, bool> bool_uniforms_state;
+	std::map<std::string, glm::vec3> vec3_uniforms_state;
+	std::map<std::string, glm::vec4> vec4_uniforms_state;
+	
 	while (!glfwWindowShouldClose(win))
 	{
 		// Time
@@ -284,11 +386,62 @@ int main(int argc, char *argv[])
 		bool mrb = glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
 		glfwGetCursorPos(win, &mx, &my);
 		
+		// Poll events
+		glfwPollEvents();
+		
+		// Imgui new frame
+		ImGui_ImplOpenGL3_NewFrame();
+		ImGui_ImplGlfw_NewFrame();
+		ImGui::NewFrame();
+		
+		// GUI
+		if (gui_visible)
+		{
+			ImGui::Begin("Controls");
+			ImGui::Text("Average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+			ImGui::Dummy(ImVec2(0.0f, 5.0f));
+			ImGui::Separator();
+			ImGui::Dummy(ImVec2(0.0f, 5.0f));
+			ImGui::TextWrapped("This section allows you to control uniforms with names beginning with 'ctl_'");
+			ImGui::Dummy(ImVec2(0.0f, 10.0f));
+			
+			if (program)
+				for (const auto &[name, unif] : program->uniforms)
+				{
+					if (name.find("ctl_") != 0) continue;
+					std::string ctl_name = name.substr(4);
+					
+					switch (unif.type)
+					{
+						case GL_INT:
+							ImGui::InputInt(ctl_name.c_str(), &int_uniforms_state[name]);
+							break;
+						
+						case GL_FLOAT:
+							ImGui::SliderFloat(ctl_name.c_str(), &float_uniforms_state[name], 0.0f, 1.0f);
+							break;
+							
+						case GL_BOOL:
+							ImGui::Checkbox(ctl_name.c_str(), &bool_uniforms_state[name]);
+							break;
+							
+						case GL_FLOAT_VEC3:
+							ImGui::ColorEdit3(ctl_name.c_str(), &vec3_uniforms_state[name][0]);
+							break;
+							
+						case GL_FLOAT_VEC4:
+							ImGui::ColorEdit4(ctl_name.c_str(), &vec4_uniforms_state[name][0]);
+							break;
+					}
+				}
+			
+			ImGui::End();
+		}
+		
 		// Resolution
 		static int win_w = 0, win_h = 0;
-		
-		static GLuint program = 0;
 		static time_t shader_mod_time = 0;
+		static double shader_start_time = 0.0;
 		
 		if (frame_counter % 5 == 0)
 		{
@@ -309,17 +462,20 @@ int main(int argc, char *argv[])
 					try
 					{
 						shader_mod_time = new_shader_mod_time;
-						glDeleteProgram(program);
-						program = 0;
 						program = make_program(shader_path, textures.size());
-						glUseProgram(program);
+						glUseProgram(program->id);
+						
+						// std::cerr << "Successfully loaded the new shader!" << std::endl;
+						// for (const auto &[k, v] : program->uniforms)
+						// 	std::cerr << "\t- " << k << std::endl;
 					}
 					catch (const std::exception &ex)
 					{
 						std::cerr << "Loading shader failed!" << std::endl;
 						std::cerr << ex.what() << std::endl;
 					}
-					glfwSetTime(0.0);
+					
+					shader_start_time = glfwGetTime();
 				}
 			}
 			catch (const std::exception &ex)
@@ -329,19 +485,70 @@ int main(int argc, char *argv[])
 		}
 		
 		glClear(GL_COLOR_BUFFER_BIT);
-		glUniform1f(glGetUniformLocation(program, "iTime"), t);
-		glUniform3f(glGetUniformLocation(program, "iResolution"), win_w, win_h, 0);
-		glUniform4f(glGetUniformLocation(program, "iMouse"), mx, my, mlb, mrb);
-		glUniform1i(glGetUniformLocation(program, "iFrame"), frame_counter);
 		
-		for (int i = 0; i < textures.size(); i++)
-			glUniform3f(glGetUniformLocation(program, ("iChannelResolution["s + std::to_string(i) +"]"s).c_str()), textures[i].width, textures[i].height, 0.f);
+		// Draw shader
+		if (program)
+		{
+			glUniform1f(program->uniforms["iTime"].location, t - shader_start_time);
+			glUniform3f(program->uniforms["iResolution"].location, win_w, win_h, 0);
+			glUniform4f(program->uniforms["iMouse"].location, mx, my, mlb, mrb);
+			glUniform1i(program->uniforms["iFrame"].location, frame_counter);
+			
+			for (const auto &[name, unif] : program->uniforms)
+			{
+				switch (unif.type)
+				{
+					case GL_INT:
+						if (auto it = int_uniforms_state.find(name); it != int_uniforms_state.end())
+							glUniform1i(unif.location, it->second);
+						break;
+						
+					case GL_FLOAT:
+						if (auto it = float_uniforms_state.find(name); it != float_uniforms_state.end())
+							glUniform1f(unif.location, it->second);
+						break;
+					
+					case GL_BOOL:
+						if (auto it = bool_uniforms_state.find(name); it != bool_uniforms_state.end())
+							glUniform1i(unif.location, it->second);
+						break;
+					
+					case GL_FLOAT_VEC3:
+						if (auto it = vec3_uniforms_state.find(name); it != vec3_uniforms_state.end())
+							glUniform3fv(unif.location, 1, &it->second[0]);
+						break;
+						
+					case GL_FLOAT_VEC4:
+						if (auto it = vec4_uniforms_state.find(name); it != vec4_uniforms_state.end())
+							glUniform4fv(unif.location, 1, &it->second[0]);
+						break;
+				}
+			}
+			
+			for (int i = 0; i < textures.size(); i++)
+				glUniform3f(program->uniforms["iChannelResolution["s + std::to_string(i) +"]"s].location, textures[i].width, textures[i].height, 0.f);
+			
+			glDrawArrays(GL_TRIANGLES, 0, 6);
+		}
 		
-		glDrawArrays(GL_TRIANGLES, 0, 6);
-		glfwPollEvents();
+		// Draw GUI
+		ImGui::Render();
+		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+		
 		glfwSwapBuffers(win);
 		frame_counter++;
 	}
+	
+	// ImGui cleanup
+	ImGui_ImplOpenGL3_Shutdown();
+	ImGui_ImplGlfw_Shutdown();
+	ImGui::DestroyContext();
+	
+	// Cleanup
+	textures.clear();
+	program.reset();
+	glDeleteVertexArrays(1, &vao);
+	glfwTerminate();
 	
 	return 0;
 }
