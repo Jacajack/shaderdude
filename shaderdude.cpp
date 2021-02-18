@@ -69,7 +69,9 @@ struct texture
 		
 		glCreateTextures(GL_TEXTURE_2D, 1, &tex);
 		glTextureStorage2D(tex, 1, GL_RGBA8, width, height);
-		glTextureSubImage2D(tex, 0, 0, 0, width, height, data_format, GL_UNSIGNED_BYTE, data);  
+		glTextureSubImage2D(tex, 0, 0, 0, width, height, data_format, GL_UNSIGNED_BYTE, data);
+		glTextureParameteri(tex, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTextureParameteri(tex, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	}
 	
 	~texture()
@@ -238,7 +240,8 @@ GLuint load_fragment_shader(const std::string &path, int texture_count)
 	std::stringstream texture_bindings;
 	for (int i = 0; i < texture_count; i++)
 		texture_bindings << "layout (binding = " << i << ") uniform sampler2D iChannel" << i << ";\n";
-	texture_bindings << "uniform vec3 iChannelResolution[" << texture_count << "];\n";
+	if (texture_count)
+		texture_bindings << "uniform vec3 iChannelResolution[" << texture_count << "];\n";
 	
 	std::string shader_source = prefix + texture_bindings.str() + slurp_txt(path) + suffix;
 	return create_shader(GL_FRAGMENT_SHADER, shader_source);
